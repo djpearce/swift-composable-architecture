@@ -7,12 +7,10 @@ struct CaseStudiesApp: App {
     WindowGroup {
       RootView(
         store: Store(
-          initialState: RootState(),
-          reducer:
-            rootReducer
+          initialState: Root.State(),
+          reducer: Root()
             .debug()
-            .signpost(),
-          environment: .live
+            .signpost()
         )
       )
     }

@@ -14,7 +14,7 @@ final class RuntimeWarningTests: XCTestCase {
     }
 
     Task {
-      _ = Store<Int, Void>(initialState: 0, reducer: .empty, environment: ())
+      _ = Store<Int, Void>(initialState: 0, reducer: EmptyReducer())
     }
     _ = XCTWaiter.wait(for: [.init()], timeout: 2)
   }
@@ -25,7 +25,7 @@ final class RuntimeWarningTests: XCTestCase {
         An effect completed on a non-main thread. …
 
           Effect returned from:
-            Action.tap
+            RuntimeWarningTests.Action.tap
 
         Make sure to use ".receive(on:)" on any effects that execute on background threads to \
         receive their output on the main thread.
@@ -38,7 +38,7 @@ final class RuntimeWarningTests: XCTestCase {
     enum Action { case tap, response }
     let store = Store(
       initialState: 0,
-      reducer: Reducer<Int, Action, Void> { state, action, _ in
+      reducer: Reduce<Int, Action> { state, action in
         switch action {
         case .tap:
           return Empty()
@@ -47,8 +47,7 @@ final class RuntimeWarningTests: XCTestCase {
         case .response:
           return .none
         }
-      },
-      environment: ()
+      }
     )
     ViewStore(store).send(.tap)
     _ = XCTWaiter.wait(for: [.init()], timeout: 2)
@@ -73,7 +72,7 @@ final class RuntimeWarningTests: XCTestCase {
       ].contains($0.compactDescription)
     }
 
-    let store = Store<Int, Void>(initialState: 0, reducer: .empty, environment: ())
+    let store = Store<Int, Void>(initialState: 0, reducer: EmptyReducer())
     Task {
       _ = store.scope(state: { $0 })
     }
@@ -105,7 +104,7 @@ final class RuntimeWarningTests: XCTestCase {
       ].contains($0.compactDescription)
     }
 
-    let store = Store(initialState: 0, reducer: Reducer<Int, Void, Void>.empty, environment: ())
+    let store = Store<Int, Void>(initialState: 0, reducer: EmptyReducer())
     Task {
       ViewStore(store).send(())
     }
@@ -122,7 +121,7 @@ final class RuntimeWarningTests: XCTestCase {
           An effect completed on a non-main thread. …
 
             Effect returned from:
-              Action.response
+              RuntimeWarningTests.Action.response
 
           Make sure to use ".receive(on:)" on any effects that execute on background threads to \
           receive their output on the main thread.
@@ -135,7 +134,7 @@ final class RuntimeWarningTests: XCTestCase {
           An effect completed on a non-main thread. …
 
             Effect returned from:
-              Action.tap
+              RuntimeWarningTests.Action.tap
 
           Make sure to use ".receive(on:)" on any effects that execute on background threads to \
           receive their output on the main thread.
@@ -148,10 +147,10 @@ final class RuntimeWarningTests: XCTestCase {
           An effect published an action on a non-main thread. …
 
             Effect published:
-              Action.response
+              RuntimeWarningTests.Action.response
 
             Effect returned from:
-              Action.tap
+              RuntimeWarningTests.Action.tap
 
           Make sure to use ".receive(on:)" on any effects that execute on background threads to \
           receive their output on the main thread.
@@ -167,7 +166,7 @@ final class RuntimeWarningTests: XCTestCase {
       enum Action { case tap, response }
       let store = Store(
         initialState: 0,
-        reducer: Reducer<Int, Action, Void> { state, action, _ in
+        reducer: Reduce<Int, Action> { state, action in
           switch action {
           case .tap:
             return .run { subscriber in
@@ -181,13 +180,13 @@ final class RuntimeWarningTests: XCTestCase {
           case .response:
             return .none
           }
-        },
-        environment: ()
+        }
       )
       await ViewStore(store).send(.tap).finish()
     }
   #endif
 
+  @MainActor
   func testBindingUnhandledAction() {
     struct State: Equatable {
       @BindableState var value = 0
@@ -196,24 +195,22 @@ final class RuntimeWarningTests: XCTestCase {
       case binding(BindingAction<State>)
     }
     let store = Store(
-      initialState: .init(),
-      reducer: Reducer<State, Action, ()>.empty,
-      environment: ()
+      initialState: State(),
+      reducer: EmptyReducer<State, Action>()
     )
 
-    var line: UInt!
+    var line: UInt?
     XCTExpectFailure {
-      line = #line
-      ViewStore(store).binding(\.$value).wrappedValue = 42
+      line = #line; ViewStore(store).binding(\.$value).wrappedValue = 42
     } issueMatcher: {
       $0.compactDescription == """
         A binding action sent from a view store at \
-        "ComposableArchitectureTests/RuntimeWarningTests.swift:\(line+1)" was not handled. …
+        "ComposableArchitectureTests/RuntimeWarningTests.swift:\(line ?? 0)" was not handled. …
 
           Action:
-            Action.binding(.set(_, 42))
+            RuntimeWarningTests.Action.binding(.set(_, 42))
 
-        To fix this, invoke the "binding()" method on your feature's reducer.
+        To fix this, invoke "BindingReducer()" from your feature reducer's "body".
         """
     }
   }

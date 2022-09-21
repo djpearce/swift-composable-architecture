@@ -34,10 +34,10 @@ For example, if the root of our application was a tab view, then we could model 
 struct that holds each tab's state as a property:
 
 ```swift
-struct AppState {
-  var activity: ActivityState
-  var search: SearchState
-  var profile: ProfileState
+struct State {
+  var activity: Activity.State
+  var search: Search.State
+  var profile: Profile.State
 }
 ```
 
@@ -46,7 +46,7 @@ because we can pass scoped stores to each child feature view:
 
 ```swift
 struct AppView: View {
-  let store: Store<AppState, AppAction>
+  let store: StoreOf<AppReducer>
 
   var body: some View {
     // No need to observe state changes because the view does
@@ -163,12 +163,12 @@ essentials of what the view needs:
 
 ```swift
 struct AppView: View {
-  let store: Store<AppState, AppAction>
+  let store: StoreOf<AppReducer>
   
   struct ViewState: Equatable {
     let selectedTab: AppState.Tab
     let unreadActivityCount: Int
-    init(state: AppState) {
+    init(state: AppReducer.State) {
       self.selectedTab = state.selectedTab
       self.unreadActivityCount = state.activity.unreadCount
     }
@@ -236,10 +236,10 @@ case .buttonTapped:
         await Task.yield()
       }
     }
-    return .response(result)
+    return .computationResponse(result)
   }
 
-case let .response(result):
+case let .computationResponse(result):
   state.result = result
 ```
 
@@ -268,9 +268,9 @@ the progress for literally every step:
 case .startButtonTapped:
   return .run { send in
     var count = 0
-    let max = await environment.eventCount()
+    let max = await self.eventsClient.count()
 
-    for await event in environment.eventSource() {
+    for await event in self.eventsClient.events() {
       defer { count += 1 }
       send(.progress(Double(count) / Double(max)))
     }
@@ -289,10 +289,10 @@ to make it so that you report the progress at most 100 times:
 case .startButtonTapped:
   return .run { send in
     var count = 0
-    let max = await environment.eventCount()
+    let max = await self.eventsClient.count()
     let interval = max / 100
 
-    for await event in environment.eventSource() {
+    for await event in self.eventsClient.events() {
       defer { count += 1 }
       if count.isMultiple(of: interval) {
         send(.progress(Double(count) / Double(max)))

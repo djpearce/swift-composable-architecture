@@ -248,9 +248,12 @@ extension Effect {
     //     due to a bug in iOS 13.2 that publisher will never complete. The bug was fixed in
     //     iOS 13.3, but to remain compatible with iOS 13.2 and higher we need to do a little
     //     trickery to make sure the deferred publisher completes.
-    Deferred { () -> Publishers.CompactMap<Result<Action?, Failure>.Publisher, Action> in
-      try? work()
-      return Just<Action?>(nil)
+    let dependencies = DependencyValues.current
+    return Deferred { () -> Publishers.CompactMap<Result<Action?, Failure>.Publisher, Action> in
+      DependencyValues.$current.withValue(dependencies) {
+        try? work()
+      }
+      return Just<Output?>(nil)
         .setFailureType(to: Failure.self)
         .compactMap { $0 }
     }
@@ -379,7 +382,7 @@ extension Publisher {
   ///
   /// ```swift
   /// case .buttonTapped:
-  ///   return environment.fetchUser(id: 1)
+  ///   return self.apiClient.fetchUser(id: 1)
   ///     .catchToEffect()
   ///     .map(ProfileAction.userResponse)
   /// ```
@@ -414,7 +417,7 @@ extension Publisher {
   ///
   /// ```swift
   /// case .buttonTapped:
-  ///   return environment.fetchUser(id: 1)
+  ///   return self.apiClient.fetchUser(id: 1)
   ///     .catchToEffect(ProfileAction.userResponse)
   /// ```
   ///

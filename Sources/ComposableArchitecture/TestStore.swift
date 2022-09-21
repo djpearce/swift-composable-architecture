@@ -40,23 +40,28 @@
   /// For example, given a simple counter reducer:
   ///
   /// ```swift
-  /// struct CounterState {
-  ///   var count = 0
-  /// }
-  /// enum CounterAction: Equatable {
-  ///   case decrementButtonTapped
-  ///   case incrementButtonTapped
-  /// }
+  /// struct Counter: ReducerProtocol {
+  ///   struct State: Equatable {
+  ///     var count = 0
+  ///   }
   ///
-  /// let counterReducer = Reducer<CounterState, CounterAction, Void> { state, action, _ in
-  ///   switch action {
-  ///   case .decrementButtonTapped:
-  ///     state.count -= 1
-  ///     return .none
+  ///   enum Action {
+  ///     case decrementButtonTapped
+  ///     case incrementButtonTapped
+  ///   }
   ///
-  ///   case .incrementButtonTapped:
-  ///     state.count += 1
-  ///     return .none
+  ///   func reduce(
+  ///     into state: inout State, action: Action
+  ///   ) -> Effect<Action, Never> {
+  ///     switch action {
+  ///     case .decrementButtonTapped:
+  ///       state.count -= 1
+  ///       return .none
+  ///
+  ///     case .incrementButtonTapped:
+  ///       state.count += 1
+  ///       return .none
+  ///     }
   ///   }
   /// }
   /// ```
@@ -68,12 +73,15 @@
   /// class CounterTests: XCTestCase {
   ///   func testCounter() async {
   ///     let store = TestStore(
-  ///       initialState: CounterState(count: 0),     // Given a counter state of 0
-  ///       reducer: counterReducer,
-  ///       environment: ()
+  ///       // Given a counter state of 0
+  ///       initialState: Counter.State(count: 0),
+  ///       reducer: Counter()
   ///     )
-  ///     await store.send(.incrementButtonTapped) {  // When the increment button is tapped
-  ///       $0.count = 1                              // Then the count should be 1
+  ///
+  ///     // When the increment button is tapped
+  ///     await store.send(.incrementButtonTapped) {
+  ///       // Then the count should be 1
+  ///       $0.count = 1
   ///     }
   ///   }
   /// }
@@ -83,62 +91,67 @@
   /// mutable value of the state before the action was sent, and it is our job to mutate the value
   /// to match the state after the action was sent. In this case the `count` field changes to `1`.
   ///
-  /// For a more complex example, consider the following bare-bones search feature that uses the
-  /// ``Effect/debounce(id:for:scheduler:options:)-76yye`` operator to wait for the user to stop
-  /// typing before making a network request:
+  /// For a more complex example, consider the following bare-bones search feature that uses a
+  /// scheduler and cancel token to debounce requests:
   ///
   /// ```swift
-  /// struct SearchState: Equatable {
-  ///   var query = ""
-  ///   var results: [String] = []
-  /// }
+  /// struct Search: ReducerProtocol {
+  ///   struct State: Equatable {
+  ///     var query = ""
+  ///     var results: [String] = []
+  ///   }
   ///
-  /// enum SearchAction: Equatable {
-  ///   case queryChanged(String)
-  ///   case response([String])
-  /// }
+  ///   enum Action: Equatable {
+  ///     case queryChanged(String)
+  ///     case response([String])
+  ///   }
   ///
-  /// struct SearchEnvironment {
-  ///   var mainQueue: AnySchedulerOf<DispatchQueue>
-  ///   var request: (String) async throws -> [String]
-  /// }
+  ///   @Dependency(\.apiClient) var apiClient
+  ///   @Dependency(\.mainQueue) var mainQueue
   ///
-  /// let searchReducer = Reducer<SearchState, SearchAction, SearchEnvironment> {
-  ///   state, action, environment in
+  ///   func reduce(
+  ///     into state: inout State, action: Action
+  ///   ) -> Effect<Action, Never> {
   ///     switch action {
   ///     case let .queryChanged(query):
   ///       enum SearchID {}
   ///
   ///       state.query = query
   ///       return .run { send in
-  ///         guard let results = try? await environment.request(query) else { return }
-  ///         send(.response(results))
+  ///         try await self.mainQueue.sleep(for: 0.5)
+  ///
+  ///         guard let results = try? await self.apiClient.search(query)
+  ///         else { return }
+  ///
+  ///         await send(.response(results))
   ///       }
-  ///       .debounce(id: SearchID.self, for: 0.5, scheduler: environment.mainQueue)
+  ///       .cancellable(id: SearchID.self, cancelInFlight: true)
   ///
   ///     case let .response(results):
   ///       state.results = results
   ///       return .none
   ///     }
+  ///   }
   /// }
   /// ```
   ///
-  /// It can be fully tested by controlling the environment's scheduler and effect:
+  /// It can be fully tested by overriding the `mainQueue` and `apiClient` dependencies with values
+  /// that are fully controlled and deterministic:
   ///
   /// ```swift
+  /// let store = TestStore(
+  ///   initialState: Search.State(),
+  ///   reducer: Search
+  /// )
+  ///
   /// // Create a test dispatch scheduler to control the timing of effects
   /// let mainQueue = DispatchQueue.test
+  /// store.dependencies.mainQueue = mainQueue.eraseToAnyScheduler()
   ///
-  /// let store = TestStore(
-  ///   initialState: SearchState(),
-  ///   reducer: searchReducer,
-  ///   environment: SearchEnvironment(
-  ///     // Wrap the test scheduler in a type-erased scheduler
-  ///     mainQueue: mainQueue.eraseToAnyScheduler(),
-  ///     // Simulate a search response with one item
-  ///     request: { ["Composable Architecture"] }
-  ///   )
-  /// )
+  /// // Simulate a search response with one item
+  /// store.dependencies.mainQueue.apiClient.search = { _ in
+  ///   ["Composable Architecture"]
+  /// }
   ///
   /// // Change the query
   /// await store.send(.searchFieldChanged("c") {
@@ -169,13 +182,22 @@
   /// This test is proving that the debounced network requests are correctly canceled when we do not
   /// wait longer than the 0.5 seconds, because if it wasn't and it delivered an action when we did
   /// not expect it would cause a test failure.
-  ///
-  public final class TestStore<State, ScopedState, Action, ScopedAction, Environment> {
+  public final class TestStore<Reducer: ReducerProtocol, ScopedState, ScopedAction, Context> {
+    /// The current dependencies.
+    ///
+    /// The dependencies define the execution context that your feature runs in. They can be
+    /// modified throughout the test store's lifecycle in order to influence how your feature
+    /// produces effects.
+    public var dependencies: DependencyValues {
+      _read { yield self.reducer.dependencies }
+      _modify { yield &self.reducer.dependencies }
+    }
+
     /// The current environment.
     ///
     /// The environment can be modified throughout a test store's lifecycle in order to influence
-    /// how it produces effects. This can be handy for testing flows that require a dependency
-    /// to start in a failing state and then later change into a succeeding state:
+    /// how it produces effects. This can be handy for testing flows that require a dependency to
+    /// start in a failing state and then later change into a succeeding state:
     ///
     /// ```swift
     /// // Start dependency endpoint in a failing state
@@ -192,103 +214,108 @@
     ///   …
     /// }
     /// ```
-    public var environment: Environment
+    public var environment: Context {
+      _read { yield self._environment.wrappedValue }
+      _modify { yield &self._environment.wrappedValue }
+    }
 
     /// The current state.
     ///
-    /// When read from a trailing closure assertion in ``send(_:_:file:line:)-7vwv9`` or
-    /// ``receive(_:timeout:_:file:line:)-88eyr``, it will equal the `inout` state passed to the
+    /// When read from a trailing closure assertion in ``send(_:_:file:line:)-3pf4p`` or
+    /// ``receive(_:timeout:_:file:line:)-1fjua``, it will equal the `inout` state passed to the
     /// closure.
-    public private(set) var state: State
+    public var state: Reducer.State {
+      self.reducer.state
+    }
 
     /// The timeout to await for in-flight effects.
     ///
     /// This is the default timeout used in all methods that take an optional timeout, such as
-    /// ``send(_:_:file:line:)-7vwv9``, ``receive(_:timeout:_:file:line:)-88eyr`` and
+    /// ``send(_:_:file:line:)-3pf4p``, ``receive(_:timeout:_:file:line:)-1fjua`` and
     /// ``finish(timeout:file:line:)-53gi5``.
     public var timeout: UInt64
 
-    private let effectDidSubscribe = AsyncStream<Void>.streamWithContinuation()
+    private var _environment: Box<Context>
     private let file: StaticString
-    private let fromScopedAction: (ScopedAction) -> Action
+    private let fromScopedAction: (ScopedAction) -> Reducer.Action
     private var line: UInt
-    private var inFlightEffects: Set<LongLivingEffect> = []
-    var receivedActions: [(action: Action, state: State)] = []
-    private let reducer: Reducer<State, Action, Environment>
-    private var store: Store<State, TestAction>!
-    private let toScopedState: (State) -> ScopedState
+    let reducer: TestReducer<Reducer>
+    private var store: Store<Reducer.State, TestReducer<Reducer>.Action>!
+    private let toScopedState: (Reducer.State) -> ScopedState
 
-    private init(
-      environment: Environment,
+    public init(
+      initialState: Reducer.State,
+      reducer: Reducer,
+      file: StaticString = #file,
+      line: UInt = #line
+    )
+    where
+      Reducer.State == ScopedState,
+      Reducer.Action == ScopedAction,
+      Context == Void
+    {
+      let reducer = TestReducer(reducer, initialState: initialState)
+      self._environment = .init(wrappedValue: ())
+      self.file = file
+      self.fromScopedAction = { $0 }
+      self.line = line
+      self.reducer = reducer
+      self.store = Store(initialState: initialState, reducer: reducer)
+      self.timeout = 100 * NSEC_PER_MSEC
+      self.toScopedState = { $0 }
+    }
+
+    // NB: Can't seem to define this as a convenience initializer in 'ReducerCompatibility.swift'.
+    @available(iOS, deprecated: 9999.0, message: "Use 'ReducerProtocol' instead.")
+    @available(macOS, deprecated: 9999.0, message: "Use 'ReducerProtocol' instead.")
+    @available(tvOS, deprecated: 9999.0, message: "Use 'ReducerProtocol' instead.")
+    @available(watchOS, deprecated: 9999.0, message: "Use 'ReducerProtocol' instead.")
+    public init(
+      initialState: ScopedState,
+      reducer: AnyReducer<ScopedState, ScopedAction, Context>,
+      environment: Context,
+      file: StaticString = #file,
+      line: UInt = #line
+    )
+    where
+      Reducer == Reduce<ScopedState, ScopedAction>
+    {
+      let environment = Box(wrappedValue: environment)
+      let reducer = TestReducer(
+        Reduce(
+          reducer.pullback(state: \.self, action: .self, environment: { $0.wrappedValue }),
+          environment: environment
+        ),
+        initialState: initialState
+      )
+      self._environment = environment
+      self.file = file
+      self.fromScopedAction = { $0 }
+      self.line = line
+      self.reducer = reducer
+      self.store = Store(initialState: initialState, reducer: reducer)
+      self.timeout = 100 * NSEC_PER_MSEC
+      self.toScopedState = { $0 }
+    }
+
+    init(
+      _environment: Box<Context>,
       file: StaticString,
-      fromScopedAction: @escaping (ScopedAction) -> Action,
-      initialState: State,
+      fromScopedAction: @escaping (ScopedAction) -> Reducer.Action,
       line: UInt,
-      reducer: Reducer<State, Action, Environment>,
-      toScopedState: @escaping (State) -> ScopedState
+      reducer: TestReducer<Reducer>,
+      store: Store<Reducer.State, TestReducer<Reducer>.Action>,
+      timeout: UInt64 = 100 * NSEC_PER_MSEC,
+      toScopedState: @escaping (Reducer.State) -> ScopedState
     ) {
-      self.environment = environment
+      self._environment = _environment
       self.file = file
       self.fromScopedAction = fromScopedAction
       self.line = line
       self.reducer = reducer
-      self.state = initialState
+      self.store = store
+      self.timeout = timeout
       self.toScopedState = toScopedState
-      self.timeout = NSEC_PER_SEC
-
-      self.store = Store(
-        initialState: initialState,
-        reducer: Reducer<State, TestAction, Void> { [weak self] state, action, _ in
-          guard let self = self
-          else {
-            XCTFail(
-              """
-              An effect sent an action to the store after the store was deallocated.
-              """,
-              file: file,
-              line: line
-            )
-            return .none
-          }
-
-          let effects: Effect<Action, Never>
-          switch action.origin {
-          case let .send(scopedAction):
-            effects = self.reducer.run(
-              &state, self.fromScopedAction(scopedAction), self.environment)
-            self.state = state
-
-          case let .receive(action):
-            effects = self.reducer.run(&state, action, self.environment)
-            self.receivedActions.append((action, state))
-          }
-
-          switch effects.operation {
-          case .none:
-            self.effectDidSubscribe.continuation.yield()
-            return .none
-
-          case .publisher, .run:
-            let effect = LongLivingEffect(file: action.file, line: action.line)
-            return
-              effects
-              .handleEvents(
-                receiveSubscription: {
-                  [effectDidSubscribe = self.effectDidSubscribe, weak self] _ in
-                  self?.inFlightEffects.insert(effect)
-                  Task {
-                    await Task.megaYield()
-                    effectDidSubscribe.continuation.yield()
-                  }
-                },
-                receiveCompletion: { [weak self] _ in self?.inFlightEffects.remove(effect) },
-                receiveCancel: { [weak self] in self?.inFlightEffects.remove(effect) }
-              )
-              .eraseToEffect { .init(origin: .receive($0), file: action.file, line: action.line) }
-          }
-        },
-        environment: ()
-      )
     }
 
     // NB: Only needed until Xcode ships a macOS SDK that uses the 5.7 standard library.
@@ -325,7 +352,7 @@
       let nanoseconds = nanoseconds ?? self.timeout
       let start = DispatchTime.now().uptimeNanoseconds
       await Task.megaYield()
-      while !self.inFlightEffects.isEmpty {
+      while !self.reducer.inFlightEffects.isEmpty {
         guard start.distance(to: DispatchTime.now().uptimeNanoseconds) < nanoseconds
         else {
           let timeoutMessage =
@@ -363,20 +390,20 @@
     }
 
     func completed() {
-      if !self.receivedActions.isEmpty {
+      if !self.reducer.receivedActions.isEmpty {
         var actions = ""
-        customDump(self.receivedActions.map(\.action), to: &actions)
+        customDump(self.reducer.receivedActions.map(\.action), to: &actions)
         XCTFail(
           """
-          The store received \(self.receivedActions.count) unexpected \
-          action\(self.receivedActions.count == 1 ? "" : "s") after this one: …
+          The store received \(self.reducer.receivedActions.count) unexpected \
+          action\(self.reducer.receivedActions.count == 1 ? "" : "s") after this one: …
 
           Unhandled actions: \(actions)
           """,
           file: self.file, line: self.line
         )
       }
-      for effect in self.inFlightEffects {
+      for effect in self.reducer.inFlightEffects {
         XCTFail(
           """
           An effect returned for this action is still running. It must complete before the end of \
@@ -403,67 +430,6 @@
           line: effect.line
         )
       }
-    }
-
-    private struct LongLivingEffect: Hashable {
-      let id = UUID()
-      let file: StaticString
-      let line: UInt
-
-      static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.id == rhs.id
-      }
-
-      func hash(into hasher: inout Hasher) {
-        self.id.hash(into: &hasher)
-      }
-    }
-
-    private struct TestAction: CustomDebugStringConvertible {
-      let origin: Origin
-      let file: StaticString
-      let line: UInt
-
-      enum Origin {
-        case send(ScopedAction)
-        case receive(Action)
-      }
-
-      var debugDescription: String {
-        switch self.origin {
-        case let .send(action):
-          return debugCaseOutput(action)
-
-        case let .receive(action):
-          return debugCaseOutput(action)
-        }
-      }
-    }
-  }
-
-  extension TestStore where State == ScopedState, Action == ScopedAction {
-    /// Initializes a test store from an initial state, a reducer, and an initial environment.
-    ///
-    /// - Parameters:
-    ///   - initialState: The state to start the test from.
-    ///   - reducer: A reducer.
-    ///   - environment: The environment to start the test from.
-    public convenience init(
-      initialState: State,
-      reducer: Reducer<State, Action, Environment>,
-      environment: Environment,
-      file: StaticString = #file,
-      line: UInt = #line
-    ) {
-      self.init(
-        environment: environment,
-        file: file,
-        fromScopedAction: { $0 },
-        initialState: initialState,
-        line: line,
-        reducer: reducer,
-        toScopedState: { $0 }
-      )
     }
   }
 
@@ -538,13 +504,13 @@
       file: StaticString = #file,
       line: UInt = #line
     ) async -> TestStoreTask {
-      if !self.receivedActions.isEmpty {
+      if !self.reducer.receivedActions.isEmpty {
         var actions = ""
-        customDump(self.receivedActions.map(\.action), to: &actions)
+        customDump(self.reducer.receivedActions.map(\.action), to: &actions)
         XCTFail(
           """
-          Must handle \(self.receivedActions.count) received \
-          action\(self.receivedActions.count == 1 ? "" : "s") before sending an action: …
+          Must handle \(self.reducer.receivedActions.count) received \
+          action\(self.reducer.receivedActions.count == 1 ? "" : "s") before sending an action: …
 
           Unhandled actions: \(actions)
           """,
@@ -552,13 +518,14 @@
         )
       }
       var expectedState = self.toScopedState(self.state)
-      let previousState = self.state
-      let task = self.store.send(.init(origin: .send(action), file: file, line: line))
-      await self.effectDidSubscribe.stream.first(where: { _ in true })
+      let previousState = self.reducer.state
+      let task = self.store
+        .send(.init(origin: .send(self.fromScopedAction(action)), file: file, line: line))
+      await self.reducer.effectDidSubscribe.stream.first(where: { _ in true })
       do {
         let currentState = self.state
-        self.state = previousState
-        defer { self.state = currentState }
+        self.reducer.state = previousState
+        defer { self.reducer.state = currentState }
 
         try self.expectedStateShouldMatch(
           expected: &expectedState,
@@ -621,13 +588,13 @@
       file: StaticString = #file,
       line: UInt = #line
     ) -> TestStoreTask {
-      if !self.receivedActions.isEmpty {
+      if !self.reducer.receivedActions.isEmpty {
         var actions = ""
-        customDump(self.receivedActions.map(\.action), to: &actions)
+        customDump(self.reducer.receivedActions.map(\.action), to: &actions)
         XCTFail(
           """
-          Must handle \(self.receivedActions.count) received \
-          action\(self.receivedActions.count == 1 ? "" : "s") before sending an action: …
+          Must handle \(self.reducer.receivedActions.count) received \
+          action\(self.reducer.receivedActions.count == 1 ? "" : "s") before sending an action: …
 
           Unhandled actions: \(actions)
           """,
@@ -636,11 +603,12 @@
       }
       var expectedState = self.toScopedState(self.state)
       let previousState = self.state
-      let task = self.store.send(.init(origin: .send(action), file: file, line: line))
+      let task = self.store
+        .send(.init(origin: .send(self.fromScopedAction(action)), file: file, line: line))
       do {
         let currentState = self.state
-        self.state = previousState
-        defer { self.state = currentState }
+        self.reducer.state = previousState
+        defer { self.reducer.state = currentState }
 
         try self.expectedStateShouldMatch(
           expected: &expectedState,
@@ -710,7 +678,7 @@
     }
   }
 
-  extension TestStore where ScopedState: Equatable, Action: Equatable {
+  extension TestStore where ScopedState: Equatable, Reducer.Action: Equatable {
     /// Asserts an action was received from an effect and asserts when state changes.
     ///
     /// - Parameters:
@@ -724,12 +692,12 @@
     @available(tvOS, deprecated: 9999.0, message: "Call the async-friendly 'receive' instead.")
     @available(watchOS, deprecated: 9999.0, message: "Call the async-friendly 'receive' instead.")
     public func receive(
-      _ expectedAction: Action,
+      _ expectedAction: Reducer.Action,
       _ updateExpectingResult: ((inout ScopedState) throws -> Void)? = nil,
       file: StaticString = #file,
       line: UInt = #line
     ) {
-      guard !self.receivedActions.isEmpty else {
+      guard !self.reducer.receivedActions.isEmpty else {
         XCTFail(
           """
           Expected to receive an action, but received none.
@@ -738,7 +706,7 @@
         )
         return
       }
-      let (receivedAction, state) = self.receivedActions.removeFirst()
+      let (receivedAction, state) = self.reducer.receivedActions.removeFirst()
       if expectedAction != receivedAction {
         let difference = TaskResultDebugging.$emitRuntimeWarnings.withValue(false) {
           diff(expectedAction, receivedAction, format: .proportional)
@@ -773,7 +741,7 @@
       } catch {
         XCTFail("Threw error: \(error)", file: file, line: line)
       }
-      self.state = state
+      self.reducer.state = state
       if "\(self.file)" == "\(file)" {
         self.line = line
       }
@@ -791,10 +759,10 @@
       ///     the store. The mutable state sent to this closure must be modified to match the state
       ///     of the store after processing the given action. Do not provide a closure if no change
       ///     is expected.
-      @MainActor
       @available(iOS 16, macOS 13, tvOS 16, watchOS 9, *)
+      @MainActor
       public func receive(
-        _ expectedAction: Action,
+        _ expectedAction: Reducer.Action,
         timeout duration: Duration,
         _ updateExpectingResult: ((inout ScopedState) throws -> Void)? = nil,
         file: StaticString = #file,
@@ -821,7 +789,7 @@
     ///     expected.
     @MainActor
     public func receive(
-      _ expectedAction: Action,
+      _ expectedAction: Reducer.Action,
       timeout nanoseconds: UInt64? = nil,
       _ updateExpectingResult: ((inout ScopedState) throws -> Void)? = nil,
       file: StaticString = #file,
@@ -829,7 +797,7 @@
     ) async {
       let nanoseconds = nanoseconds ?? self.timeout
 
-      guard !self.inFlightEffects.isEmpty
+      guard !self.reducer.inFlightEffects.isEmpty
       else {
         { self.receive(expectedAction, updateExpectingResult, file: file, line: line) }()
         return
@@ -840,13 +808,13 @@
       while !Task.isCancelled {
         await Task.detached(priority: .low) { await Task.yield() }.value
 
-        guard self.receivedActions.isEmpty
+        guard self.reducer.receivedActions.isEmpty
         else { break }
 
         guard start.distance(to: DispatchTime.now().uptimeNanoseconds) < nanoseconds
         else {
           let suggestion: String
-          if self.inFlightEffects.isEmpty {
+          if self.reducer.inFlightEffects.isEmpty {
             suggestion = """
               There are no in-flight effects that could deliver this action. Could the effect you \
               expected to deliver this action have been cancelled?
@@ -903,14 +871,15 @@
     public func scope<S, A>(
       state toScopedState: @escaping (ScopedState) -> S,
       action fromScopedAction: @escaping (A) -> ScopedAction
-    ) -> TestStore<State, S, Action, A, Environment> {
+    ) -> TestStore<Reducer, S, A, Context> {
       .init(
-        environment: self.environment,
+        _environment: self._environment,
         file: self.file,
         fromScopedAction: { self.fromScopedAction(fromScopedAction($0)) },
-        initialState: self.store.state.value,
         line: self.line,
         reducer: self.reducer,
+        store: self.store,
+        timeout: self.timeout,
         toScopedState: { toScopedState(self.toScopedState($0)) }
       )
     }
@@ -924,12 +893,12 @@
     ///   view store state transformations.
     public func scope<S>(
       state toScopedState: @escaping (ScopedState) -> S
-    ) -> TestStore<State, S, Action, ScopedAction, Environment> {
+    ) -> TestStore<Reducer, S, ScopedAction, Context> {
       self.scope(state: toScopedState, action: { $0 })
     }
   }
 
-  /// The type returned from ``TestStore/send(_:_:file:line:)-7vwv9`` that represents the lifecycle
+  /// The type returned from ``TestStore/send(_:_:file:line:)-3pf4p`` that represents the lifecycle
   /// of the effect started from sending an action.
   ///
   /// You can use this value in tests to cancel the effect started from sending an action:
@@ -1039,6 +1008,91 @@
     /// no way to uncancel a task.
     public var isCancelled: Bool {
       self.rawValue?.isCancelled ?? true
+    }
+  }
+
+  class TestReducer<Base: ReducerProtocol>: ReducerProtocol {
+    let base: Base
+    var dependencies = { () -> DependencyValues in
+      var dependencies = DependencyValues()
+      dependencies.context = .test
+      return dependencies
+    }()
+    let effectDidSubscribe = AsyncStream<Void>.streamWithContinuation()
+    var inFlightEffects: Set<LongLivingEffect> = []
+    var receivedActions: [(action: Base.Action, state: Base.State)] = []
+    var state: Base.State
+
+    init(
+      _ base: Base,
+      initialState: Base.State
+    ) {
+      self.base = base
+      self.state = initialState
+    }
+
+    func reduce(into state: inout Base.State, action: Action) -> Effect<Action, Never> {
+      let reducer = self.base.dependency(\.self, self.dependencies)
+
+      let effects: Effect<Base.Action, Never>
+      switch action.origin {
+      case let .send(action):
+        effects = reducer.reduce(into: &state, action: action)
+        self.state = state
+
+      case let .receive(action):
+        effects = reducer.reduce(into: &state, action: action)
+        self.receivedActions.append((action, state))
+      }
+
+      switch effects.operation {
+      case .none:
+        self.effectDidSubscribe.continuation.yield()
+        return .none
+
+      case .publisher, .run:
+        let effect = LongLivingEffect(file: action.file, line: action.line)
+        return
+          effects
+          .handleEvents(
+            receiveSubscription: { [effectDidSubscribe, weak self] _ in
+              self?.inFlightEffects.insert(effect)
+              Task {
+                await Task.megaYield()
+                effectDidSubscribe.continuation.yield()
+              }
+            },
+            receiveCompletion: { [weak self] _ in self?.inFlightEffects.remove(effect) },
+            receiveCancel: { [weak self] in self?.inFlightEffects.remove(effect) }
+          )
+          .map { .init(origin: .receive($0), file: action.file, line: action.line) }
+          .eraseToEffect()
+      }
+    }
+
+    struct LongLivingEffect: Hashable {
+      let id = UUID()
+      let file: StaticString
+      let line: UInt
+
+      static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id
+      }
+
+      func hash(into hasher: inout Hasher) {
+        self.id.hash(into: &hasher)
+      }
+    }
+
+    struct Action {
+      let origin: Origin
+      let file: StaticString
+      let line: UInt
+
+      enum Origin {
+        case send(Base.Action)
+        case receive(Base.Action)
+      }
     }
   }
 

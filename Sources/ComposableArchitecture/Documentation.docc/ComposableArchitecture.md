@@ -48,13 +48,18 @@ day-to-day when building applications, such as:
 ### Essentials
 
 - <doc:GettingStarted>
-- <doc:GettingReadyForSwiftConcurrency>
 - <doc:Performance>
+- <doc:Dependencies>
 - <doc:Testing>
 
-### State Management
+### Upgrade guides
 
-- ``Reducer``
+- <doc:SwiftConcurrency>
+- <doc:ReducerProtocols>
+
+### State management
+
+- ``ReducerProtocol``
 - ``Effect``
 - ``Store``
 - ``ViewStore``

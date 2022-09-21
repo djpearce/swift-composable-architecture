@@ -481,13 +481,12 @@ extension Effect where Failure == Error {
 extension Store {
   public static func unchecked<Environment>(
     initialState: State,
-    reducer: Reducer<State, Action, Environment>,
+    reducer: AnyReducer<State, Action, Environment>,
     environment: Environment
   ) -> Self {
-    Self(
+    self.init(
       initialState: initialState,
-      reducer: reducer,
-      environment: environment,
+      reducer: Reduce(reducer, environment: environment),
       mainThreadChecksEnabled: false
     )
   }
@@ -535,7 +534,7 @@ extension Effect {
 
 // MARK: - Deprecated after 0.31.0:
 
-extension Reducer {
+extension AnyReducer {
   @available(
     *,
     deprecated,
@@ -548,7 +547,7 @@ extension Reducer {
     breakpointOnNil: Bool,
     file: StaticString = #fileID,
     line: UInt = #line
-  ) -> Reducer<ParentState, ParentAction, ParentEnvironment> {
+  ) -> AnyReducer<ParentState, ParentAction, ParentEnvironment> {
     self.pullback(
       state: toChildState,
       action: toChildAction,
@@ -567,7 +566,7 @@ extension Reducer {
     breakpointOnNil: Bool,
     file: StaticString = #fileID,
     line: UInt = #line
-  ) -> Reducer<
+  ) -> AnyReducer<
     State?, Action, Environment
   > {
     self.optional(file: file, line: line)
@@ -585,7 +584,7 @@ extension Reducer {
     breakpointOnNil: Bool,
     file: StaticString = #fileID,
     line: UInt = #line
-  ) -> Reducer<ParentState, ParentAction, ParentEnvironment> {
+  ) -> AnyReducer<ParentState, ParentAction, ParentEnvironment> {
     self.forEach(
       state: toElementsState,
       action: toElementAction,
@@ -607,7 +606,7 @@ extension Reducer {
     breakpointOnNil: Bool,
     file: StaticString = #fileID,
     line: UInt = #line
-  ) -> Reducer<ParentState, ParentAction, ParentEnvironment> {
+  ) -> AnyReducer<ParentState, ParentAction, ParentEnvironment> {
     self.forEach(
       state: toElementsState,
       action: toElementAction,
@@ -621,7 +620,7 @@ extension Reducer {
 // MARK: - Deprecated after 0.29.0:
 
 #if DEBUG
-  extension TestStore where ScopedState: Equatable, Action: Equatable {
+  extension TestStore where ScopedState: Equatable, Reducer.Action: Equatable {
     @available(
       *, deprecated, message: "Use 'TestStore.send' and 'TestStore.receive' directly, instead."
     )
@@ -651,13 +650,14 @@ extension Reducer {
           self.receive(expectedAction, update, file: step.file, line: step.line)
 
         case let .environment(work):
-          if !self.receivedActions.isEmpty {
+          if !self.reducer.receivedActions.isEmpty {
             var actions = ""
-            customDump(self.receivedActions.map(\.action), to: &actions)
+            customDump(self.reducer.receivedActions.map(\.action), to: &actions)
             XCTFail(
               """
-              Must handle \(self.receivedActions.count) received \
-              action\(self.receivedActions.count == 1 ? "" : "s") before performing this work: …
+              Must handle \(self.reducer.receivedActions.count) received \
+              action\(self.reducer.receivedActions.count == 1 ? "" : "s") before performing this \
+              work: …
 
               Unhandled actions: \(actions)
               """,
@@ -671,13 +671,14 @@ extension Reducer {
           }
 
         case let .do(work):
-          if !receivedActions.isEmpty {
+          if !self.reducer.receivedActions.isEmpty {
             var actions = ""
-            customDump(self.receivedActions.map(\.action), to: &actions)
+            customDump(self.reducer.receivedActions.map(\.action), to: &actions)
             XCTFail(
               """
-              Must handle \(self.receivedActions.count) received \
-              action\(self.receivedActions.count == 1 ? "" : "s") before performing this work: …
+              Must handle \(self.reducer.receivedActions.count) received \
+              action\(self.reducer.receivedActions.count == 1 ? "" : "s") before performing this \
+              work: …
 
               Unhandled actions: \(actions)
               """,
@@ -727,7 +728,7 @@ extension Reducer {
 
       @available(*, deprecated, message: "Call 'TestStore.receive' directly, instead.")
       public static func receive(
-        _ action: Action,
+        _ action: Reducer.Action,
         file: StaticString = #file,
         line: UInt = #line,
         _ update: ((inout ScopedState) throws -> Void)? = nil
@@ -739,7 +740,7 @@ extension Reducer {
       public static func environment(
         file: StaticString = #file,
         line: UInt = #line,
-        _ update: @escaping (inout Environment) throws -> Void
+        _ update: @escaping (inout Context) throws -> Void
       ) -> Step {
         Step(.environment(update), file: file, line: line)
       }
@@ -773,8 +774,8 @@ extension Reducer {
 
       fileprivate indirect enum StepType {
         case send(ScopedAction, ((inout ScopedState) throws -> Void)?)
-        case receive(Action, ((inout ScopedState) throws -> Void)?)
-        case environment((inout Environment) throws -> Void)
+        case receive(Reducer.Action, ((inout ScopedState) throws -> Void)?)
+        case environment((inout Context) throws -> Void)
         case `do`(() throws -> Void)
         case sequence([Step])
       }
@@ -889,6 +890,7 @@ extension ViewStore where Action: BindableAction, Action.State == State {
       https://github.com/pointfreeco/swift-composable-architecture/pull/810
       """
   )
+  @MainActor
   public subscript<Value: Equatable>(
     dynamicMember keyPath: WritableKeyPath<State, BindableState<Value>>
   ) -> Binding<Value> {
@@ -938,7 +940,7 @@ extension BindingAction {
   }
 }
 
-extension Reducer {
+extension AnyReducer {
   @available(
     *, deprecated,
     message:
@@ -966,6 +968,7 @@ extension ViewStore {
       the view store's 'Action' type must also conform to 'BindableAction'.
       """
   )
+  @MainActor
   public func binding<Value: Equatable>(
     keyPath: WritableKeyPath<State, Value>,
     send action: @escaping (BindingAction<State>) -> Action
@@ -1014,7 +1017,7 @@ extension AlertState.Button {
 
 // MARK: - Deprecated after 0.20.0:
 
-extension Reducer {
+extension AnyReducer {
   @available(*, deprecated, message: "Use the 'IdentifiedArray'-based version, instead.")
   public func forEach<ParentState, ParentAction, ParentEnvironment>(
     state toElementsState: WritableKeyPath<ParentState, [State]>,
@@ -1024,7 +1027,7 @@ extension Reducer {
     file: StaticString = #file,
     fileID: StaticString = #fileID,
     line: UInt = #line
-  ) -> Reducer<ParentState, ParentAction, ParentEnvironment> {
+  ) -> AnyReducer<ParentState, ParentAction, ParentEnvironment> {
     .init { parentState, parentAction, parentEnvironment in
       guard let (index, action) = toElementAction.extract(from: parentAction) else {
         return .none

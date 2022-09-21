@@ -164,22 +164,22 @@ final class DebugTests: XCTestCase {
 
     XCTAssertNoDifference(
       debugCaseOutput(Action.action1(true, label: "Blob")),
-      "Action.action1(_:, label:)"
+      "DebugTests.Action.action1(_:, label:)"
     )
 
     XCTAssertNoDifference(
       debugCaseOutput(Action.action2(true, 1, "Blob")),
-      "Action.action2(_:, _:, _:)"
+      "DebugTests.Action.action2(_:, _:, _:)"
     )
 
     XCTAssertNoDifference(
       debugCaseOutput(Action.screenA(.row(index: 1, action: .tapped))),
-      "Action.screenA(.row(index:, action: .tapped))"
+      "DebugTests.Action.screenA(.row(index:, action: .tapped))"
     )
 
     XCTAssertNoDifference(
       debugCaseOutput(Action.screenA(.row(index: 1, action: .textChanged(query: "Hi")))),
-      "Action.screenA(.row(index:, action: .textChanged(query:)))"
+      "DebugTests.Action.screenA(.row(index:, action: .textChanged(query:)))"
     )
   }
 
@@ -199,5 +199,20 @@ final class DebugTests: XCTestCase {
       )
       """#
     )
+  }
+
+  @MainActor
+  func testDebugReducer() async {
+    struct DebuggedReducer: ReducerProtocol {
+      typealias State = Int
+      typealias Action = Bool
+      func reduce(into state: inout Int, action: Bool) -> Effect<Bool, Never> {
+        state += action ? 1 : -1
+        return .none
+      }
+    }
+
+    let store = TestStore(initialState: 0, reducer: DebuggedReducer().debug())
+    await store.send(true) { $0 = 1 }
   }
 }

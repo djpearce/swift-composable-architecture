@@ -13,12 +13,12 @@ final class TestStoreTests: XCTestCase {
 
     let mainQueue = DispatchQueue.test
 
-    let reducer = Reducer<State, Action, AnySchedulerOf<DispatchQueue>> { _, action, scheduler in
+    let reducer = Reduce<State, Action> { _, action in
       switch action {
       case .a:
         return .merge(
           Effect.concatenate(.init(value: .b1), .init(value: .c1))
-            .delay(for: 1, scheduler: scheduler)
+            .delay(for: 1, scheduler: mainQueue)
             .eraseToEffect(),
           Empty(completeImmediately: false)
             .eraseToEffect()
@@ -42,8 +42,7 @@ final class TestStoreTests: XCTestCase {
 
     let store = TestStore(
       initialState: State(),
-      reducer: reducer,
-      environment: mainQueue.eraseToAnyScheduler()
+      reducer: reducer
     )
 
     await store.send(.a)
@@ -68,7 +67,7 @@ final class TestStoreTests: XCTestCase {
     }
     let store = TestStore(
       initialState: 0,
-      reducer: Reducer<Int, Action, Void> { state, action, _ in
+      reducer: Reduce<Int, Action> { state, action in
         switch action {
         case .tap:
           return .task { .response(42) }
@@ -76,8 +75,7 @@ final class TestStoreTests: XCTestCase {
           state = number
           return .none
         }
-      },
-      environment: ()
+      }
     )
 
     await store.send(.tap)
@@ -97,7 +95,7 @@ final class TestStoreTests: XCTestCase {
       case changed(from: Int, to: Int)
     }
 
-    let reducer = Reducer<State, Action, Void> { state, action, scheduler in
+    let reducer = Reduce<State, Action> { state, action in
       switch action {
       case .increment:
         state.isChanging = true
@@ -111,11 +109,7 @@ final class TestStoreTests: XCTestCase {
       }
     }
 
-    let store = TestStore(
-      initialState: State(),
-      reducer: reducer,
-      environment: ()
-    )
+    let store = TestStore(initialState: State(), reducer: reducer)
 
     await store.send(.increment) {
       $0.isChanging = true
@@ -147,7 +141,7 @@ final class TestStoreTests: XCTestCase {
       case noop, finished
     }
 
-    let reducer = Reducer<State, Action, Void> { state, action, scheduler in
+    let reducer = Reduce<State, Action> { state, action in
       switch action {
       case .noop:
         return Effect(value: .finished)
@@ -156,11 +150,7 @@ final class TestStoreTests: XCTestCase {
       }
     }
 
-    let store = TestStore(
-      initialState: State(),
-      reducer: reducer,
-      environment: ()
-    )
+    let store = TestStore(initialState: State(), reducer: reducer)
 
     await store.send(.noop)
     await store.receive(.finished)
@@ -181,7 +171,7 @@ final class TestStoreTests: XCTestCase {
     enum Action { case a, b, c, d }
     let store = TestStore(
       initialState: 0,
-      reducer: Reducer<Int, Action, Void> { count, action, _ in
+      reducer: Reduce<Int, Action> { count, action in
         switch action {
         case .a:
           count += 1
@@ -190,8 +180,7 @@ final class TestStoreTests: XCTestCase {
           count += 1
           return .none
         }
-      },
-      environment: ()
+      }
     )
 
     await store.send(.a) {
